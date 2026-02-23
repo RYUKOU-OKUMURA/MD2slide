@@ -5,14 +5,17 @@
  * 1. Validates CSS with cssValidator
  * 2. Validates image URLs in markdown with imageUrlValidator
  * 3. Converts with marpConverter
- * 4. Updates job status (processing -> done/error)
+ * 4. For slides format: Uploads to Drive and converts to Google Slides
+ * 5. Updates job status (processing -> done/error)
  */
 
 import type { JobQueue, QueueJobData } from '../queue/interface.js';
 import { TempFileManager } from './tempFileManager.js';
-import { convertMarkdown, type ConversionResult } from './marpConverter.js';
+import { convertMarkdown } from './marpConverter.js';
 import { validateCSS } from '../security/cssValidator.js';
 import { validateImageUrl } from '../security/imageUrlValidator.js';
+import { DriveClient, maskToken } from '../google/index.js';
+import { readFile } from 'fs/promises';
 
 /** Default polling interval in milliseconds (1 second) */
 const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -183,9 +186,22 @@ export class JobProcessor {
         console.log(`[JobProcessor] All image URLs validated for job ${jobId}`);
       }
 
-      // Step 3: Create temp file and convert
+      // Step 3: Validate access token for slides format
+      if (job.format === 'slides') {
+        if (!job.accessToken) {
+          const errorMsg = 'Access token is required for slides export';
+          console.error(`[JobProcessor] ${errorMsg}`);
+          await this.queue.fail(jobId, errorMsg);
+          return;
+        }
+        console.log(
+          `[JobProcessor] Access token provided for slides export: ${maskToken(job.accessToken)}`
+        );
+      }
+
+      // Step 4: Create temp file and convert
       const extension = job.format === 'pdf' ? 'pdf' : 'pptx';
-      const { path: outputPath, cleanup } = await this.tempManager.createTempFile(extension);
+      const { path: outputPath } = await this.tempManager.createTempFile(extension);
 
       // Schedule cleanup for the output file
       this.tempManager.scheduleCleanup(outputPath);
@@ -201,15 +217,25 @@ export class JobProcessor {
           return;
         }
 
-        console.log(`[JobProcessor] Conversion successful for job ${jobId}, output: ${result.outputPath}`);
+        console.log(
+          `[JobProcessor] Conversion successful for job ${jobId}, output: ${result.outputPath}`
+        );
 
-        // Step 4: Update job status with result
-        // Note: For now, we just complete with the local path
-        // In production, this would be replaced with:
-        // - For PDF: Upload to storage and return download URL
-        // - For Slides: Upload to Google Drive and convert to Slides
+        // Step 5: Handle format-specific post-processing
+        let jobResult: { slidesUrl?: string; downloadUrl?: string };
 
-        const jobResult = this.buildJobResult(job.format, result.outputPath ?? outputPath);
+        if (job.format === 'slides' && job.accessToken) {
+          // Upload to Drive and convert to Slides
+          jobResult = await this.processSlidesExport(
+            result.outputPath ?? outputPath,
+            job.filename ?? 'presentation',
+            job.folderId,
+            job.accessToken
+          );
+        } else {
+          // PDF: Return download URL
+          jobResult = this.buildJobResult(job.format, result.outputPath ?? outputPath);
+        }
 
         await this.queue.complete(jobId, jobResult);
         console.log(`[JobProcessor] Job ${jobId} completed successfully`);
@@ -223,6 +249,43 @@ export class JobProcessor {
       console.error(`[JobProcessor] Unexpected error processing job ${jobId}:`, errorMessage);
       await this.queue.fail(jobId, `Internal error: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Processes slides export: Upload PPTX to Drive and convert to Slides
+   *
+   * @param pptxPath - Path to the generated PPTX file
+   * @param filename - Desired filename (without extension)
+   * @param folderId - Target folder ID (optional)
+   * @param accessToken - OAuth access token
+   * @returns Job result with slidesUrl
+   */
+  private async processSlidesExport(
+    pptxPath: string,
+    filename: string,
+    folderId: string | undefined,
+    accessToken: string
+  ): Promise<{ slidesUrl: string }> {
+    console.log(`[JobProcessor] Processing slides export: path=${pptxPath}, filename=${filename}`);
+
+    // Read the PPTX file
+    const fileContent = await readFile(pptxPath);
+    console.log(`[JobProcessor] PPTX file read: ${fileContent.length} bytes`);
+
+    // Create Drive client with the provided access token
+    const driveClient = new DriveClient(accessToken);
+
+    // Upload to Drive and convert to Slides
+    const slidesUrl = await driveClient.uploadAndConvertToSlides({
+      name: `${filename}.pptx`,
+      content: fileContent,
+      folderId,
+      deleteOriginal: true,
+    });
+
+    console.log(`[JobProcessor] Slides export completed: ${slidesUrl}`);
+
+    return { slidesUrl };
   }
 
   /**
@@ -264,7 +327,10 @@ export class JobProcessor {
    * @param outputPath - Path to the output file
    * @returns Job result with appropriate URL
    */
-  private buildJobResult(format: string, outputPath: string): { slidesUrl?: string; downloadUrl?: string } {
+  private buildJobResult(
+    format: string,
+    outputPath: string
+  ): { slidesUrl?: string; downloadUrl?: string } {
     // In a production environment:
     // - For PDF: Upload to cloud storage and return public URL
     // - For Slides: Upload to Google Drive and convert, return Slides URL

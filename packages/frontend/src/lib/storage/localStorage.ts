@@ -6,6 +6,7 @@
 export const STORAGE_KEYS = {
   MARKDOWN: 'md2slide_markdown',
   SPLIT_PANE_WIDTH: 'md2slide_split_width',
+  SELECTED_FOLDER: 'md2slide_selected_folder',
   // 将来用: SETTINGS, DOCUMENTS等
 } as const;
 

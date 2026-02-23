@@ -10,6 +10,8 @@ export interface QueueJobData {
   format: ExportFormat;
   folderId?: string;
   filename?: string;
+  /** OAuth 2.0 access token for Drive operations (required for slides format) */
+  accessToken?: string;
   status: JobStatus;
   result?: JobResult;
   errorMessage?: string;

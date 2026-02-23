@@ -118,7 +118,8 @@ export default typescript.config(
       'react-hooks/exhaustive-deps': 'warn',
 
       // Next.js specific rules
-      '@next/next/no-html-link-for-pages': 'warn',
+      '@next/next/no-html-link-for-pages': 'off',
+      '@next/next/no-duplicate-head': 'off', // Incompatible with ESLint 9
     },
   },
 
