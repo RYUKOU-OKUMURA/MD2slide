@@ -1,0 +1,51 @@
+%% MD2slide エクスポートフロー シーケンス図
+%% Google Slides出力とPDF出力のデータフロー
+
+sequenceDiagram
+    participant User as ユーザー
+    participant Frontend as フロントエンド
+    participant Backend as バックエンド API
+    participant Queue as キュー
+    participant Worker as Worker
+    participant Drive as Google Drive
+
+    rect rgb(232, 241, 255)
+        Note over User,Drive: Google Slides 出力フロー
+        User->>Frontend: Export → Google Slides 選択
+        opt 初回 or 変更時
+            User->>Frontend: OAuth consent + フォルダ選択
+        end
+        Frontend->>Backend: POST md/css + folderId + format=slides<br/>Authorization: Bearer token
+        Backend->>Queue: enqueue(job)
+        Backend->>Frontend: jobId 返却
+        loop 3秒間隔、最大5分
+            Frontend->>Backend: GET /jobs/{jobId}/status
+            Backend->>Frontend: status (pending/processing)
+        end
+        Queue->>Worker: ジョブ取得
+        Worker->>Worker: Marp CLI で PPTX 生成
+        Worker->>Drive: アップロード（mimeType: Slides変換指定）
+        Drive->>Worker: slidesUrl
+        Worker->>Backend: ジョブステータス "done" + slidesUrl
+        Frontend->>Backend: GET /jobs/{jobId}/status
+        Backend->>Frontend: status: done, slidesUrl
+        Frontend->>User: 「開く」リンク表示
+    end
+
+    rect rgb(233, 247, 236)
+        Note over User,Drive: PDF 出力フロー（OAuth不要）
+        User->>Frontend: Export → PDF 選択
+        Frontend->>Backend: POST md/css + format=pdf
+        Backend->>Queue: enqueue(job)
+        Backend->>Frontend: jobId 返却
+        loop 3秒間隔、最大5分
+            Frontend->>Backend: GET /jobs/{jobId}/status
+            Backend->>Frontend: status (pending/processing)
+        end
+        Queue->>Worker: ジョブ取得
+        Worker->>Worker: Marp CLI --pdf で PDF 生成
+        Worker->>Backend: ジョブステータス "done" + downloadUrl
+        Frontend->>Backend: GET /jobs/{jobId}/status
+        Backend->>Frontend: status: done, downloadUrl
+        Frontend->>User: ダウンロードリンク表示
+    end

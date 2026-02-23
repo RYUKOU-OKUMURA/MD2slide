@@ -1,0 +1,35 @@
+%% MD2slide コンポーネント詳細図
+%% フロントエンド・バックエンド・Workerの責務
+
+flowchart LR
+    subgraph Frontend["フロントエンド"]
+        direction TB
+        Editor["Editor<br/>・Markdown入力<br/>・テンプレ挿入（2カラム/図解/ラベル）<br/>・文字量チェック→警告"]
+        Preview["Preview<br/>・marp-coreでHTML生成<br/>・テーマ/CSS適用"]
+        Export["Export<br/>・Google OAuth<br/>・Drive Picker（フォルダ選択）<br/>・進捗ポーリング→完了リンク"]
+        Editor --> Preview
+        Preview --> Export
+    end
+
+    subgraph Backend["バックエンド"]
+        direction TB
+        ExportAPI["Export API<br/>・入力: md, css, format, folderId?<br/>・format: slides | pdf<br/>・jobId発行"]
+        Storage["Storage<br/>・一時ファイル TTL: 即削除<br/>・ジョブ状態 TTL: 7日"]
+        ExportAPI --> Storage
+    end
+
+    subgraph WorkerDetail["Worker 詳細"]
+        direction TB
+        W1["md/cssを一時ディレクトリに展開"]
+        W2["format=slides:<br/>PPTX生成→Driveアップロード→Slides変換"]
+        W3["format=pdf:<br/>PDF生成→downloadUrl返却"]
+        W4["画像: httpsのみ、SSRF対策"]
+        W5["CSS: ホワイトリスト検証"]
+        W1 --> W2
+        W1 --> W3
+        W1 --> W4
+        W1 --> W5
+    end
+
+    Frontend --> Backend
+    Backend --> WorkerDetail

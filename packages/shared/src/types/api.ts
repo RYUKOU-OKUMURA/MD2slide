@@ -1,4 +1,4 @@
-import type { ExportFormat, JobStatus, JobResult } from './job';
+import type { ExportFormat, JobStatus, JobResult } from './job.js';
 
 /**
  * Request body for export API
@@ -55,4 +55,4 @@ export interface ApiError {
 }
 
 // Re-export job types for convenience
-export type { Job, JobStatus, JobResult, ExportFormat } from './job';
+export type { Job, JobStatus, JobResult, ExportFormat } from './job.js';

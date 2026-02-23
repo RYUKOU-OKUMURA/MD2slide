@@ -1,0 +1,50 @@
+%% MD2slide システムアーキテクチャ図
+%% 要件定義・技術スタック・アーキテクチャに基づく
+
+flowchart TB
+    subgraph Browser["ブラウザ（フロントエンド）"]
+        Editor["Markdown Editor<br/>CodeMirror 6"]
+        Preview["Preview Renderer<br/>@marp-team/marp-core + iframe"]
+        LocalStorage["Local Storage / IndexedDB<br/>下書き・設定・folderId"]
+        OAuth["Google OAuth 2.0<br/>PKCE（クライアント主導）"]
+        Editor --> Preview
+        Editor --> LocalStorage
+        OAuth --> Editor
+    end
+
+    subgraph Backend["バックエンド API（Node.js）"]
+        ExportAPI["Export Job API<br/>enqueue / getStatus"]
+        Auth["Auth callback<br/>token exchange"]
+        ExportAPI --> Auth
+    end
+
+    subgraph Queue["キュー"]
+        direction TB
+        Phase1["Phase1: Cloud Tasks"]
+        Phase2["Phase2: Redis + BullMQ"]
+    end
+
+    subgraph Worker["Worker（コンテナ）"]
+        MarpCLI["Marp CLI<br/>--pptx / --pdf"]
+        DriveUpload["Drive API<br/>アップロード + Slides変換"]
+        MarpCLI --> DriveUpload
+    end
+
+    subgraph External["外部サービス"]
+        Drive["Google Drive API"]
+        Picker["Google Picker API<br/>フォルダ選択"]
+    end
+
+    subgraph Storage["ストレージ"]
+        TempFiles["一時ファイル<br/>TTL: ジョブ完了後即削除"]
+        JobDB["ジョブ状態 DB<br/>TTL: 7日"]
+    end
+
+    Browser -->|"Export リクエスト<br/>md/css/assets + format + folderId"| Backend
+    Backend --> Queue
+    Queue --> Worker
+    Worker -->|"Slides出力時"| Drive
+    Worker --> TempFiles
+    Worker --> JobDB
+    Browser -->|"フォルダ選択"| Picker
+    Browser -->|"OAuth token<br/>Authorization ヘッダー"| Backend

@@ -4,7 +4,7 @@
  */
 
 // Job types
-export type { JobStatus, ExportFormat, JobResult, Job } from './types/job';
+export type { JobStatus, ExportFormat, JobResult, Job } from './types/job.js';
 
 // API types
-export type { ExportRequest, ExportResponse, JobStatusResponse, ApiError } from './types/api';
+export type { ExportRequest, ExportResponse, JobStatusResponse, ApiError } from './types/api.js';
