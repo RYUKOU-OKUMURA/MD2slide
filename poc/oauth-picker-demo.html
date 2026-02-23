@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MD2slide PoC-2: OAuth + Picker検証</title>
+  <style>
+    body {
+      font-family: 'Noto Sans JP', sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      margin: 5px;
+      cursor: pointer;
+    }
+    .status {
+      margin-top: 20px;
+      padding: 15px;
+      background: #f5f5f5;
+      border-radius: 8px;
+    }
+    .error {
+      background: #ffebee;
+      color: #c62828;
+    }
+    .success {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+  </style>
+</head>
+<body>
+  <h1>MD2slide PoC-2: OAuth + Picker検証</h1>
+
+  <h2>設定</h2>
+  <div>
+    <label>Client ID: <input type="text" id="clientId" size="60" placeholder="YOUR_CLIENT_ID.apps.googleusercontent.com"></label><br>
+    <label>API Key: <input type="text" id="apiKey" size="60" placeholder="YOUR_API_KEY"></label>
+  </div>
+
+  <h2>手順</h2>
+  <ol>
+    <li>上記にGCP設定値を入力</li>
+    <li>「Login」ボタンでOAuth認証</li>
+    <li>「Select Folder」でフォルダ選択</li>
+    <li>「Upload PPTX」でテストファイルをアップロード</li>
+  </ol>
+
+  <h2>Actions</h2>
+  <button onclick="login()">Login (OAuth PKCE)</button>
+  <button onclick="showPicker()">Select Folder</button>
+  <button onclick="uploadFile()">Upload PPTX</button>
+  <button onclick="convertToSlides()">Convert to Slides</button>
+
+  <div id="status" class="status">
+    Status: Ready
+  </div>
+
+  <h2>Tokens</h2>
+  <pre id="tokenInfo">Not logged in</pre>
+
+  <h2>Selected Folder</h2>
+  <pre id="folderInfo">No folder selected</pre>
+
+  <!-- Google API Script -->
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script src="https://accounts.google.com/gsi/client"></script>
+
+  <script>
+    // 設定値
+    const getclientId = () => document.getElementById('clientId').value;
+    const getApiKey = () => document.getElementById('apiKey').value;
+
+    const REDIRECT_URI = window.location.origin + window.location.pathname;
+    const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+    // 状態管理
+    let accessToken = null;
+    let refreshToken = null;
+    let selectedFolderId = null;
+    let uploadedFileId = null;
+
+    // PKCE用のランダム文字列生成
+    function generateRandomString(length) {
+      const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+      let result = '';
+      const cryptoArray = new Uint8Array(length);
+      crypto.getRandomValues(cryptoArray);
+      for (let i = 0; i < length; i++) {
+        result += charset[cryptoArray[i] % charset.length];
+      }
+      return result;
+    }
+
+    // SHA256ハッシュ（Base64URL）
+    async function sha256(plain) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(plain);
+      const hash = await crypto.subtle.digest('SHA-256', data);
+      return base64URLEncode(hash);
+    }
+
+    function base64URLEncode(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      bytes.forEach(b => binary += String.fromCharCode(b));
+      return btoa(binary)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    }
+
+    // ステータス更新
+    function updateStatus(message, isError = false, isSuccess = false) {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'Status: ' + message;
+      statusEl.className = 'status' + (isError ? ' error' : isSuccess ? ' success' : '');
+    }
+
+    // OAuth ログイン (PKCE)
+    async function login() {
+      const clientId = getclientId();
+      if (!clientId) {
+        updateStatus('Client IDを入力してください', true);
+        return;
+      }
+
+      // code_verifierとcode_challengeを生成
+      const codeVerifier = generateRandomString(64);
+      const codeChallenge = await sha256(codeVerifier);
+      const state = generateRandomString(32);
+
+      // sessionStorageに保存（コールバックで使用）
+      sessionStorage.setItem('pkce_verifier', codeVerifier);
+      sessionStorage.setItem('oauth_state', state);
+
+      // 認可URL構築
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('redirect_uri', REDIRECT_URI);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', SCOPE);
+      authUrl.searchParams.set('code_challenge', codeChallenge);
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+      authUrl.searchParams.set('state', state);
+      authUrl.searchParams.set('access_type', 'offline');
+      authUrl.searchParams.set('prompt', 'consent');
+
+      // リダイレクト
+      window.location.href = authUrl.toString();
+    }
+
+    // OAuth コールバック処理
+    async function handleCallback() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get('code');
+      const state = urlParams.get('state');
+      const error = urlParams.get('error');
+
+      if (error) {
+        updateStatus('OAuth error: ' + error, true);
+        return;
+      }
+
+      if (!code) return; // コールバックではない
+
+      // state検証
+      const savedState = sessionStorage.getItem('oauth_state');
+      if (state !== savedState) {
+        updateStatus('Invalid state - possible CSRF', true);
+        return;
+      }
+
+      const codeVerifier = sessionStorage.getItem('pkce_verifier');
+      const clientId = getclientId();
+
+      // トークン交換
+      try {
+        const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: clientId,
+            code: code,
+            code_verifier: codeVerifier,
+            grant_type: 'authorization_code',
+            redirect_uri: REDIRECT_URI
+          })
+        });
+
+        const tokens = await tokenResponse.json();
+
+        if (tokens.error) {
+          updateStatus('Token error: ' + tokens.error, true);
+          return;
+        }
+
+        accessToken = tokens.access_token;
+        refreshToken = tokens.refresh_token;
+
+        // URLからコードを削除
+        window.history.replaceState({}, document.title, REDIRECT_URI);
+
+        updateStatus('Login successful!', false, true);
+        document.getElementById('tokenInfo').textContent = JSON.stringify({
+          access_token: accessToken.substring(0, 20) + '...',
+          refresh_token: refreshToken ? '(stored)' : '(none)',
+          expires_in: tokens.expires_in
+        }, null, 2);
+
+      } catch (e) {
+        updateStatus('Token exchange failed: ' + e.message, true);
+      }
+    }
+
+    // Google Picker表示
+    function showPicker() {
+      const clientId = getclientId();
+      const apiKey = getApiKey();
+
+      if (!accessToken) {
+        updateStatus('Please login first', true);
+        return;
+      }
+
+      if (!apiKey) {
+        updateStatus('API Keyを入力してください', true);
+        return;
+      }
+
+      gapi.load('picker', () => {
+        const picker = new google.picker.PickerBuilder()
+          .addView(google.picker.ViewId.FOLDERS)
+          .enableFeature(google.picker.Feature.NAV_HIDDEN)
+          .setOAuthToken(accessToken)
+          .setDeveloperKey(apiKey)
+          .setCallback(pickerCallback)
+          .build();
+        picker.setVisible(true);
+      });
+    }
+
+    function pickerCallback(data) {
+      if (data.action === google.picker.Action.PICKED) {
+        const doc = data.docs[0];
+        selectedFolderId = doc.id;
+        const folderName = doc.name;
+        updateStatus('Folder selected: ' + folderName, false, true);
+        document.getElementById('folderInfo').textContent = JSON.stringify({
+          id: selectedFolderId,
+          name: folderName
+        }, null, 2);
+      }
+    }
+
+    // PPTXアップロード
+    async function uploadFile() {
+      if (!accessToken) {
+        updateStatus('Please login first', true);
+        return;
+      }
+
+      if (!selectedFolderId) {
+        updateStatus('Please select a folder first', true);
+        return;
+      }
+
+      updateStatus('Creating test PPTX...');
+
+      // テスト用のPPTX（Base64エンコードされた最小PPTX）
+      // 実際は生成したPPTXを使用
+      const testContent = 'Test content - in production, use actual PPTX file';
+
+      const metadata = {
+        name: 'MD2slide-Test-' + Date.now() + '.pptx',
+        parents: [selectedFolderId],
+        mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      };
+
+      try {
+        // Resumable upload開始
+        const initResponse = await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + accessToken,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(metadata)
+          }
+        );
+
+        if (!initResponse.ok) {
+          throw new Error('Upload init failed: ' + initResponse.status);
+        }
+
+        const uploadUrl = initResponse.headers.get('Location');
+
+        // 実際のファイルをアップロード
+        // fetch sample-slides.pptx
+        const pptxResponse = await fetch('sample-slides.pptx');
+        const pptxBlob = await pptxResponse.blob();
+
+        const uploadResponse = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Authorization': 'Bearer ' + accessToken,
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+          },
+          body: pptxBlob
+        });
+
+        const result = await uploadResponse.json();
+        uploadedFileId = result.id;
+
+        updateStatus('Upload successful! File ID: ' + uploadedFileId, false, true);
+
+      } catch (e) {
+        updateStatus('Upload failed: ' + e.message, true);
+      }
+    }
+
+    // Slides変換
+    async function convertToSlides() {
+      if (!accessToken) {
+        updateStatus('Please login first', true);
+        return;
+      }
+
+      if (!selectedFolderId) {
+        updateStatus('Please select a folder first', true);
+        return;
+      }
+
+      updateStatus('Uploading and converting to Google Slides...');
+
+      const metadata = {
+        name: 'MD2slide-Test-' + Date.now(),
+        parents: [selectedFolderId],
+        mimeType: 'application/vnd.google-apps.presentation'
+      };
+
+      try {
+        // PPTXを取得
+        const pptxResponse = await fetch('sample-slides.pptx');
+        const pptxBlob = await pptxResponse.blob();
+
+        // multipart/related upload（変換付き）
+        const boundary = 'boundary' + Date.now();
+        const parts = [];
+
+        // Metadata part
+        parts.push('--' + boundary);
+        parts.push('Content-Type: application/json; charset=UTF-8');
+        parts.push('');
+        parts.push(JSON.stringify(metadata));
+
+        // Media part
+        parts.push('--' + boundary);
+        parts.push('Content-Type: application/vnd.openxmlformats-officedocument.presentationml.presentation');
+        parts.push('Content-Transfer-Encoding: base64');
+        parts.push('');
+
+        const reader = new FileReader();
+        reader.readAsDataURL(pptxBlob);
+        await new Promise(resolve => reader.onload = resolve);
+        const base64Data = reader.result.split(',')[1];
+        parts.push(base64Data);
+        parts.push('--' + boundary + '--');
+
+        const body = parts.join('\r\n');
+
+        const response = await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + accessToken,
+              'Content-Type': 'multipart/related; boundary=' + boundary
+            },
+            body: body
+          }
+        );
+
+        const result = await response.json();
+
+        if (result.error) {
+          throw new Error(result.error.message);
+        }
+
+        updateStatus('Conversion successful!', false, true);
+
+        const slidesUrl = 'https://docs.google.com/presentation/d/' + result.id + '/edit';
+        document.getElementById('folderInfo').textContent = JSON.stringify({
+          slidesId: result.id,
+          slidesUrl: slidesUrl
+        }, null, 2);
+
+        // 新しいタブで開く
+        window.open(slidesUrl, '_blank');
+
+      } catch (e) {
+        updateStatus('Conversion failed: ' + e.message, true);
+      }
+    }
+
+    // ページ読み込み時にコールバック処理
+    window.onload = handleCallback;
+  </script>
+</body>
+</html>

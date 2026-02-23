@@ -1,0 +1,48 @@
+# MD2slide Docker Compose
+# Worker + PostgreSQL
+
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://md2slide:md2slide_secret@postgres:5432/md2slide
+      - CHROMIUM_PATH=/usr/bin/chromium
+      - MARP_ALLOW_LOCAL_FILES=true
+    volumes:
+      - ../packages/backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=md2slide
+      - POSTGRES_PASSWORD=md2slide_secret
+      - POSTGRES_DB=md2slide
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U md2slide -d md2slide']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
